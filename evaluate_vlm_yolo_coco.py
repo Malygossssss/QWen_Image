@@ -4,6 +4,7 @@ Outputs YOLO-style metrics: mAP@0.5, mAP@0.5:0.95, Precision, Recall
 """
 
 import os
+import sys
 import json
 import yaml
 from tqdm import tqdm
@@ -93,15 +94,33 @@ print(f"✅ Saved ground truth to {GT_JSON}")
 print("🔄 Converting VLM predictions to COCO format...")
 
 preds = []
-img_to_id = {im["file_name"].split('.')[0]: im["id"] for im in coco_gt["images"]}
+img_to_id = {}
+for im in coco_gt["images"]:
+    file_name = im["file_name"]
+    stem = os.path.splitext(file_name)[0]
+    img_to_id[stem] = im["id"]
+    img_to_id[file_name] = im["id"]
+
+missing_prediction = []
+missing_json = []
 
 for img_folder in tqdm(sorted(os.listdir(PRED_ROOT))):
     json_path = os.path.join(PRED_ROOT, img_folder, "result.json")
     if not os.path.exists(json_path):
+        if os.path.isdir(os.path.join(PRED_ROOT, img_folder)):
+            missing_json.append(img_folder)
         continue
-    if img_folder not in img_to_id:
+    
+    key = img_folder
+    if key not in img_to_id:
+        stem = os.path.splitext(img_folder)[0]
+        key = stem if stem in img_to_id else key
+
+    if key not in img_to_id:
+        missing_prediction.append(img_folder)
         continue
-    image_id = img_to_id[img_folder]
+    
+    image_id = img_to_id[key]
     with open(json_path, "r") as f:
         dets = json.load(f)
 
@@ -122,6 +141,21 @@ for img_folder in tqdm(sorted(os.listdir(PRED_ROOT))):
 with open(PRED_JSON, "w") as f:
     json.dump(preds, f, indent=2)
 print(f"✅ Saved predictions to {PRED_JSON}")
+
+if missing_json:
+    print("⚠️ The following prediction folders did not contain result.json:")
+    for folder in missing_json:
+        print(f"   - {folder}")
+
+if missing_prediction:
+    print("⚠️ Could not match the following prediction folders to any ground-truth image."
+          " Please ensure folder names align with image file names:")
+    for folder in missing_prediction:
+        print(f"   - {folder}")
+
+if len(preds) == 0:
+    print("⚠️ No predictions were matched to ground truth images. Skipping evaluation.")
+    sys.exit(0)
 
 # ==============================
 # Step 4. Evaluate using COCO API
