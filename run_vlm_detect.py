@@ -31,6 +31,27 @@ def recover_partial_detections(raw_text: str):
     return recovered if recovered else None
 
 
+def convert_relative_to_absolute(detections, image_width, image_height):
+    """
+    将模型输出的相对坐标（0-1000范围）转换为实际像素坐标
+    detections: [{"bbox_2d": [x1, y1, x2, y2], "label": "xxx"}, ...]
+    """
+    converted = []
+    for det in detections:
+        rel_x1, rel_y1, rel_x2, rel_y2 = det["bbox_2d"]
+        # 将相对坐标转换为绝对坐标
+        abs_x1 = int(rel_x1 / 1000.0 * image_width)
+        abs_y1 = int(rel_y1 / 1000.0 * image_height)
+        abs_x2 = int(rel_x2 / 1000.0 * image_width)
+        abs_y2 = int(rel_y2 / 1000.0 * image_height)
+        
+        converted.append({
+            "bbox_2d": [abs_x1, abs_y1, abs_x2, abs_y2],
+            "label": det["label"]
+        })
+    return converted
+
+
 def draw_bboxes(image, detections):
     """
     在输入 PIL.Image 上画出目标检测框和标签
@@ -49,7 +70,7 @@ def draw_bboxes(image, detections):
 # ==============================
 # Step 1: 加载模型
 # ==============================
-MODEL_PATH = "/nas_pub_data/models/base/qwen2.5-vl-3b-instruct"
+MODEL_PATH = "/nas_pub_data/models/base/qwen3-vl-4b-instruct"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 OUTPUT_ROOT = "outputs"
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
@@ -78,19 +99,13 @@ for img_file in image_files:
     # ==============================
     # Step 3: 构造 Prompt
     # ==============================
-    category_list = ", ".join(VOC_CLASSES)
-
     conversation = [
         {"role": "user", "content": [
             {"type": "image"},
             {"type": "text", "text": (
-                f"Please detect all objects in this image, but only from the following 20 Pascal VOC categories:\n"
-                f"[{category_list}].\n"
-                f"For each detected object, return a JSON list where each item is:\n"
-                f'{{\"bbox_2d\":[x1,y1,x2,y2], \"label\":\"<one of the above names>\"}}.\n'
-                f"Make sure category names strictly match the list above (e.g., use 'sofa' instead of 'couch', 'tvmonitor' instead of 'tv').\n"
-                f"Use integer pixel coordinates for bounding boxes.\n"
-                f"Return only the JSON array without Markdown formatting or code block syntax."
+                "Locate every instance that belongs to the following categories: 'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', "
+                "'diningtable', 'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'. "
+                "Report bbox coordinates in JSON format."
             )}
         ]}
     ]

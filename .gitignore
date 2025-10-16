@@ -218,6 +218,7 @@ __marimo__/
 #Data
 Pascal-VOC-2012/
 outputs/
+visual_bbox_output/
 gt_coco.json
 pred_coco.json
 *.zip
