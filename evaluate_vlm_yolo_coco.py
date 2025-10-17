@@ -105,7 +105,7 @@ missing_prediction = []
 missing_json = []
 
 for img_folder in tqdm(sorted(os.listdir(PRED_ROOT))):
-    json_path = os.path.join(PRED_ROOT, img_folder, "result.json")
+    json_path = os.path.join(PRED_ROOT, img_folder, "result_absolute.json")
     if not os.path.exists(json_path):
         if os.path.isdir(os.path.join(PRED_ROOT, img_folder)):
             missing_json.append(img_folder)

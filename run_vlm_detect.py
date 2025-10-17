@@ -195,11 +195,20 @@ for img_file in image_files:
         print(f"❌ {img_file} 未检测到边界框，请检查模型输出")
         continue
 
+    # 在保存前，分别记录相对坐标（0-1000）与转换后的绝对像素坐标
     with open(os.path.join(save_dir, "result.json"), "w", encoding="utf-8") as f:
         json.dump(detections, f, ensure_ascii=False, indent=2)
 
+    image_width, image_height = image.size
+    detections_absolute = convert_relative_to_absolute(
+        detections, image_width, image_height
+    )
+
+    with open(os.path.join(save_dir, "result_absolute.json"), "w", encoding="utf-8") as f:
+        json.dump(detections_absolute, f, ensure_ascii=False, indent=2)
+
     out_img = os.path.join(save_dir, "detection.jpg")
-    vis_img = draw_bboxes(image, detections)
+    vis_img = draw_bboxes(image, detections_absolute)
     vis_img.save(out_img)
 
     if detections:
