@@ -54,6 +54,9 @@ def convert_relative_to_absolute(detections, image_width, image_height):
     """Convert relative bbox coordinates (0-1000) to pixel coordinates."""
     converted = []
     for det in detections:
+        if not isinstance(det, dict):
+            print(f"⚠️ 跳过异常检测项：{det}")
+            continue
         bbox = det.get("bbox_2d")
 
         # [ADDED] 结构防护：确保 bbox 是一个包含4个数的列表
@@ -182,33 +185,80 @@ for img_file in sorted(image_files):
     detections = None
     parse_failed = False
     try:
+        json_candidates = []
+
+        def _add_candidate(text: str):
+            if not text:
+                return
+            candidate = text.strip()
+            if not candidate:
+                return
+            if candidate not in json_candidates:
+                json_candidates.append(candidate)
+
         match = re.search(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", assistant_text)
         if match:
-            json_str = match.group(1).strip()
-            detections = json.loads(json_str)
-        else:
-            start = assistant_text.find("[")
-            end = assistant_text.rfind("]")
-            if start != -1 and end != -1:
-                json_str = assistant_text[start:end + 1]
-                detections = json.loads(json_str)
-            else:
-                print("ℹ️ 未找到有效 JSON 方括号，视为空检测结果。")
-                detections = []
-                parse_failed = False
+            _add_candidate(match.group(1))
 
-        if isinstance(detections, str):
-            detections = json.loads(detections)
-        if isinstance(detections, dict):
-            detections = [detections]
+        _add_candidate(assistant_text)
 
-        # [MODIFIED] 统一字段名（category → label）
+        array_match = re.search(r"\[\s*\{", assistant_text)
+        if array_match:
+            array_start = array_match.start()
+            array_tail_match = re.search(r"\}\s*\]", assistant_text[array_start:])
+            if array_tail_match:
+                array_end = array_start + array_tail_match.end()
+                _add_candidate(assistant_text[array_start:array_end])
+
+        obj_start = assistant_text.find("{")
+        obj_end = assistant_text.rfind("}")
+        if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+            _add_candidate(assistant_text[obj_start:obj_end + 1])
+
+        parsed_successfully = False
+        for candidate in json_candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(parsed, str):
+                try:
+                    parsed = json.loads(parsed)
+                except json.JSONDecodeError:
+                    pass
+
+            if isinstance(parsed, dict):
+                detections = [parsed]
+                parsed_successfully = True
+                break
+            if isinstance(parsed, list):
+                detections = parsed
+                parsed_successfully = True
+                break
+
+        if not parsed_successfully:
+            if json_candidates:
+                parse_failed = True
+            detections = None
+
         if detections:
+            normalized = []
+            dropped_any = False
             for d in detections:
+                if not isinstance(d, dict):
+                    print(f"⚠️ 忽略非字典检测项：{d}")
+                    dropped_any = True
+                    continue
                 if "category" in d and "label" not in d:
                     d["label"] = d.pop("category")
                 if "class" in d and "label" not in d:
                     d["label"] = d.pop("class")
+                normalized.append(d)
+            detections = normalized
+            if dropped_any and not detections:
+                parse_failed = True
+                detections = None
 
     except Exception as e:
         parse_failed = True

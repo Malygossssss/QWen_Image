@@ -19,6 +19,25 @@ PRED_ROOT = "/mnt/pub/wyf/workspace/image_identification/coco_outputs"       # �
 
 PRED_JSON = "pred_coco.json"
 
+def _resolve_pred_root(path):
+    """Return an existing prediction root, falling back to the repo default."""
+    if os.path.isdir(path):
+        return path
+
+    repo_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coco_outputs")
+    if os.path.isdir(repo_default):
+        print(
+            f"⚠️ Prediction root '{path}' not found. Falling back to '{repo_default}'."
+        )
+        return repo_default
+
+    raise FileNotFoundError(
+        f"Prediction root '{path}' does not exist and no fallback directory was found."
+    )
+
+
+PRED_ROOT = _resolve_pred_root(PRED_ROOT)
+
 # ==============================
 # Step 1. Load COCO classes
 # ==============================
