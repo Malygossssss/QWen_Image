@@ -62,8 +62,8 @@ def collect_annotations(
     image_id: int,
     category_lookup: Dict[int, str],
 ) -> List[dict]:
-     """Return bbox-centric annotation details for a specific image."""
-     
+    """Return bbox-centric annotation details for a specific image."""
+
     result: List[dict] = []
     for ann in data.get("annotations", []):
         if ann.get("image_id") != image_id:
