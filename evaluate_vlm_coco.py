@@ -63,10 +63,25 @@ for im in coco_gt.dataset["images"]:
 missing_prediction = []
 missing_json = []
 
+def _find_prediction_file(folder):
+    """Locate the prediction JSON file inside ``folder``.
+
+    Older runs exported ``result_absolute.json`` while newer ones use
+    ``result.json``.  We support both to avoid silent evaluation skips.
+    """
+
+    preferred_names = ["result_absolute.json", "result.json", "result.txt"]
+    for name in preferred_names:
+        path = os.path.join(folder, name)
+        if os.path.exists(path):
+            return path
+    return None
+
 for img_folder in tqdm(sorted(os.listdir(PRED_ROOT))):
-    json_path = os.path.join(PRED_ROOT, img_folder, "result_absolute.json")
-    if not os.path.exists(json_path):
-        if os.path.isdir(os.path.join(PRED_ROOT, img_folder)):
+    folder_path = os.path.join(PRED_ROOT, img_folder)
+    json_path = _find_prediction_file(folder_path)
+    if json_path is None:
+        if os.path.isdir(folder_path):
             missing_json.append(img_folder)
         continue
 
@@ -81,7 +96,15 @@ for img_folder in tqdm(sorted(os.listdir(PRED_ROOT))):
 
     image_id = img_to_id[key]
     with open(json_path, "r") as f:
-        dets = json.load(f)
+        try:
+            dets = json.load(f)
+        except json.JSONDecodeError:
+            print(f"❌ JSONDecodeError in file: {json_path}")
+            f.seek(0)
+            text = f.read().strip()
+            print(f"File content preview: {text[:200]}")  # 看看文件里到底是什么
+            continue
+            # dets = json.loads(f.read())
 
     for det in dets:
         # 🔧 支持 Qwen 输出格式：{"label": str, "bbox_2d": [x1, y1, x2, y2]}
@@ -105,7 +128,11 @@ with open(PRED_JSON, "w") as f:
 print(f"✅ Saved predictions to {PRED_JSON}")
 
 if missing_json:
-    print("⚠️ The following prediction folders did not contain result_absolute.json:")
+    expected_names = ["result_absolute.json", "result.json", "result.txt"]
+    print(
+        "⚠️ The following prediction folders did not contain any supported result "
+        f"file (expected one of {expected_names}):"
+    )
     for folder in missing_json:
         print(f"   - {folder}")
 
