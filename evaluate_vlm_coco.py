@@ -6,6 +6,7 @@ Outputs COCO-style metrics: mAP@0.5, mAP@0.5:0.95, Precision, Recall
 import os
 import sys
 import json
+import numpy as np
 from tqdm import tqdm
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -18,6 +19,7 @@ GT_JSON_PATH = "/mnt/pub/wyf/workspace/image_identification/coco2017/annotations
 PRED_ROOT = "/mnt/pub/wyf/workspace/image_identification/coco_outputs"       # 🔧 你的Qwen输出目录
 
 PRED_JSON = "pred_coco.json"
+PER_IMAGE_RESULTS_JSON = "per_image_eval.json"
 
 def _resolve_pred_root(path):
     """Return an existing prediction root, falling back to the repo default."""
@@ -161,3 +163,120 @@ print("  mAP@0.5:0.95  = {:.3f}".format(cocoEval.stats[0]))
 print("  mAP@0.5       = {:.3f}".format(cocoEval.stats[1]))
 print("  Precision     = {:.3f}".format(cocoEval.stats[8]))
 print("  Recall        = {:.3f}".format(cocoEval.stats[9]))
+
+# ==============================
+# Step 4. Save per-image evaluation details
+# ==============================
+print("\n💾 Collecting per-image evaluation details...")
+
+iou_thresholds = cocoEval.params.iouThrs
+iou_target = 0.5
+thr_idx = int(np.argmin(np.abs(iou_thresholds - iou_target)))
+selected_iou = float(iou_thresholds[thr_idx])
+
+max_det = int(cocoEval.params.maxDets[-1])
+area_all = cocoEval.params.areaRng[0]
+
+per_image_results = {}
+
+for eval_img in cocoEval.evalImgs:
+    if eval_img is None:
+        continue
+
+    if eval_img.get("aRng") != area_all:
+        continue
+
+    if eval_img.get("maxDet") != max_det:
+        continue
+
+    image_id = int(eval_img["image_id"])
+    cat_id = int(eval_img["category_id"])
+
+    dt_matches = np.array(eval_img["dtMatches"])
+    dt_ignore = np.array(eval_img["dtIgnore"])
+    gt_matches = np.array(eval_img["gtMatches"])
+    gt_ignore = np.array(eval_img["gtIgnore"])
+
+    # Some category/image pairs may have no detections or annotations, leading to
+    # empty arrays for the IoU threshold dimension. Skip those safely instead of
+    # raising an IndexError when indexing with ``thr_idx``.
+    if (
+        dt_matches.shape[0] <= thr_idx
+        or dt_ignore.shape[0] <= thr_idx
+        or gt_matches.shape[0] <= thr_idx
+        or gt_ignore.shape[0] <= thr_idx
+    ):
+        continue
+
+    dt_matches_thr = dt_matches[thr_idx]
+    dt_ignore_thr = dt_ignore[thr_idx].astype(bool)
+    gt_matches_thr = gt_matches[thr_idx]
+    gt_ignore_thr = gt_ignore[thr_idx].astype(bool)
+
+    true_positives = int(np.sum((dt_matches_thr > 0) & (~dt_ignore_thr)))
+    false_positives = int(np.sum((dt_matches_thr == 0) & (~dt_ignore_thr)))
+    false_negatives = int(np.sum((gt_matches_thr == 0) & (~gt_ignore_thr)))
+    total_detections = true_positives + false_positives
+
+    record = per_image_results.setdefault(
+        image_id,
+        {
+            "image_id": image_id,
+            "file_name": coco_gt.imgs[image_id]["file_name"],
+            "true_positives": 0,
+            "false_positives": 0,
+            "false_negatives": 0,
+            "total_detections": 0,
+            "categories": [],
+        },
+    )
+
+    record["true_positives"] += true_positives
+    record["false_positives"] += false_positives
+    record["false_negatives"] += false_negatives
+    record["total_detections"] += total_detections
+
+    if total_detections > 0 or false_negatives > 0:
+        record["categories"].append(
+            {
+                "category_id": cat_id,
+                "true_positives": true_positives,
+                "false_positives": false_positives,
+                "false_negatives": false_negatives,
+                "detections": total_detections,
+            }
+        )
+
+per_image_list = []
+for stats in per_image_results.values():
+    tp = stats["true_positives"]
+    fp = stats["false_positives"]
+    fn = stats["false_negatives"]
+
+    stats["precision"] = round(tp / (tp + fp), 6) if (tp + fp) > 0 else None
+    stats["recall"] = round(tp / (tp + fn), 6) if (tp + fn) > 0 else None
+    stats["num_categories"] = len(stats["categories"])
+
+    per_image_list.append(stats)
+
+per_image_list.sort(
+    key=lambda item: (
+        -1 if item["precision"] is None else item["precision"],
+        item["recall"] if item["recall"] is not None else -1,
+    )
+)
+
+output_payload = {
+    "iou_threshold": selected_iou,
+    "max_detections": max_det,
+    "results": per_image_list,
+}
+
+with open(PER_IMAGE_RESULTS_JSON, "w") as f:
+    json.dump(output_payload, f, indent=2)
+
+print(
+    "✅ Saved per-image evaluation details to {} (IoU threshold {:.2f}).".format(
+        PER_IMAGE_RESULTS_JSON, selected_iou
+    )
+)
