@@ -7,6 +7,7 @@ import cv2
 from transformers import AutoProcessor, AutoModelForImageTextToText
 import re
 from typing import List
+import argparse
 
 
 _DEF_CATEGORIES = []
@@ -99,6 +100,26 @@ def draw_bboxes(image, detections):
     return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
 
+def _str_to_bool(value: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    value = value.strip().lower()
+    if value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if value in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value for --skip-existing (true/false).")
+
+
+parser = argparse.ArgumentParser(description="Run Qwen VL detection on COCO2017 validation images.")
+parser.add_argument(
+    "--skip-existing",
+    type=_str_to_bool,
+    default=True,
+    help="When true, skip images that already have outputs under coco_outputs (default: true).",
+)
+args = parser.parse_args()
+
 MODEL_PATH = "/nas_pub_data/models/base/qwen3-vl-4b-instruct"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 OUTPUT_ROOT = "coco_outputs"
@@ -138,8 +159,8 @@ for img_file in sorted(image_files):
     save_dir = os.path.join(OUTPUT_ROOT, img_name)
     result_json = os.path.join(save_dir, "result.json")
 
-    # 如果结果文件已存在，则自动跳过，防止重复处理
-    if os.path.exists(result_json):
+     # 如果结果文件已存在且开启跳过，则自动跳过，防止重复处理
+    if args.skip_existing and os.path.exists(result_json):
         print(f"⏩ 已检测到 {result_json}，跳过 {img_file}")
         continue
 ### [END MODIFIED]
@@ -161,7 +182,7 @@ for img_file in sorted(image_files):
     prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
 
     inputs = processor(text=prompt, images=image, return_tensors="pt").to(DEVICE)
-    output = model.generate(**inputs, max_new_tokens=512)
+    output = model.generate(**inputs, max_new_tokens=4096)
 
     result_text = processor.batch_decode(output, skip_special_tokens=True)[0]
     print(f"\n📷 {img_file} Raw model output:\n", result_text)

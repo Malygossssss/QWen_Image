@@ -221,6 +221,7 @@ outputs/
 coco_outputs/
 visual_bbox_output/
 coco2017/
+SUNRGBD_DATA/
 gt_coco.json
 pred_coco.json
 *.zip
