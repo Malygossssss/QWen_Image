@@ -50,6 +50,30 @@ Each image folder will contain:
 * `result.json`: absolute pixel coordinates for every detection
 * `detection.jpg`: visualization with bounding boxes drawn
 
+## `run_vlm_detect_sunrgbd.py`
+
+Batch inference script for the SUN RGB-D dataset. It mirrors the COCO runner
+but reads images from `<repo>/SUNRGBD_DATA/SUNRGBD` and writes results under
+`sunrgbd_outputs/<relative/image/path>/` while recovering 3D bounding boxes
+only.
+
+```bash
+python run_vlm_detect_sunrgbd.py \
+  --skip-existing true   # default; reuse existing results in sunrgbd_outputs
+```
+
+Usage notes:
+
+* Place the official SUN RGB-D release inside `<repo>/SUNRGBD_DATA/` so that
+  the sibling folders `SUNRGBD`, `SUNRGBDMetaData`, and `SUNRGBDtoolbox` match
+  the expected structure.
+* Update `MODEL_PATH` if your Qwen checkpoint lives elsewhere.
+* The script automatically reads category names from `SUNRGBDMetaData` when
+  available; otherwise it falls back to a default list of common indoor
+  classes.
+* Each output directory contains the raw response (`result.txt`) and parsed 3D
+  bounding boxes (`result.json`).
+
 ## `run_vlm_detect.py`
 
 Equivalent detection pipeline for Pascal VOC style datasets. By default it
