@@ -1,5 +1,6 @@
 import os
 import json
+import tarfile
 import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
@@ -42,7 +43,39 @@ _NUMBER_PATTERN = r"-?\d+(?:\.\d+)?"
 
 
 def _load_sunrgbd_categories(metadata_root: str) -> List[str]:
-    """Attempt to load SUN RGB-D category names from metadata files."""
+    """Attempt to load SUN RGB-D category names from metadata files or archives."""
+
+    def _parse_category_stream(stream) -> List[str]:
+        try:
+            raw = stream.read()
+        except OSError:
+            return []
+        if not raw:
+            return []
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="ignore")
+        categories = [
+            line.strip().split()[0]
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        return sorted({c for c in categories if c})
+
+    def _load_from_file(path: str) -> List[str]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                categories = [
+                    line.strip().split()[0]
+                    for line in f
+                    if line.strip() and not line.startswith("#")
+                ]
+        except OSError:
+            return []
+        categories = sorted({c for c in categories if c})
+        return categories
+        
     candidates = [
         os.path.join(metadata_root, "category_list.txt"),
         os.path.join(metadata_root, "category_list.tsv"),
@@ -52,14 +85,37 @@ def _load_sunrgbd_categories(metadata_root: str) -> List[str]:
     for path in candidates:
         if not os.path.exists(path):
             continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                categories = [line.strip().split()[0] for line in f if line.strip() and not line.startswith("#")]
-        except OSError:
-            continue
-        categories = sorted({c for c in categories if c})
+        categories = _load_from_file(path)
         if categories:
             return categories
+        
+    archive_candidates = [
+        os.path.join(metadata_root, "sunrgbd_train_test_labels.tar.gz"),
+        os.path.join(metadata_root, "train13labels.tgz"),
+        os.path.join(metadata_root, "test13labels.tgz"),
+    ]
+    archive_filenames = {"category_list.txt", "category_list.tsv", "object_list.txt"}
+
+    for archive_path in archive_candidates:
+        if not os.path.isfile(archive_path):
+            continue
+        try:
+            with tarfile.open(archive_path, "r:*") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile():
+                        continue
+                    base_name = os.path.basename(member.name)
+                    if base_name not in archive_filenames:
+                        continue
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        continue
+                    categories = _parse_category_stream(extracted)
+                    if categories:
+                        return categories
+        except (tarfile.TarError, OSError):
+            continue
+
     return _DEF_CATEGORIES
 
 
@@ -347,8 +403,12 @@ for image_path in sorted(image_files):
         elif parse_failed:
             print("⚠️ 无法从模型输出中恢复有效检测结果")
 
+    result_path = os.path.join(save_dir, "result.json")
+
     if detections is None:
-        print(f"❌ {relative_path} 未检测到边界框，请检查模型输出")
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+        print(f"⚠️ {relative_path} 未解析到检测结果，已保存空结果文件")
         continue
 
     abs_detections = convert_relative_to_absolute_3d(
@@ -357,8 +417,6 @@ for image_path in sorted(image_files):
         image.height,
     )
 
-    with open(os.path.join(save_dir, "result.json"), "w", encoding="utf-8") as f:
+    with open(result_path, "w", encoding="utf-8") as f:
         json.dump(abs_detections, f, ensure_ascii=False, indent=2)
-        print(f"✅ 检测结果已保存到 {save_dir}")
-    else:
-        print(f"⚠️ {relative_path} 未解析到检测结果，已保存空结果文件")
+    print(f"✅ 检测结果已保存到 {save_dir}")

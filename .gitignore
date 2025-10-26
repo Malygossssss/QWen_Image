@@ -219,6 +219,7 @@ __marimo__/
 Pascal-VOC-2012/
 outputs/
 coco_outputs/
+sunrgbd_outputs/
 visual_bbox_output/
 coco2017/
 SUNRGBD_DATA/
