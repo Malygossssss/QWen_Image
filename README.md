@@ -52,10 +52,10 @@ Each image folder will contain:
 
 ## `run_vlm_detect_sunrgbd.py`
 
-Batch inference script for the SUN RGB-D dataset. It mirrors the COCO runner
-but reads images from `<repo>/SUNRGBD_DATA/SUNRGBD` and writes results under
-`sunrgbd_outputs/<relative/image/path>/` while recovering 3D bounding boxes
-only.
+Run volumetric detections on the SUN RGB-D dataset with Qwen3-VL. The script
+discovers the dataset split, constructs a text-and-image prompt for each frame,
+parses structured responses, and rewrites the 3D box coordinates into absolute
+pixel units before saving them per image under `sunrgbd_outputs/`.
 
 ```bash
 python run_vlm_detect_sunrgbd.py \
@@ -64,15 +64,27 @@ python run_vlm_detect_sunrgbd.py \
 
 Usage notes:
 
-* Place the official SUN RGB-D release inside `<repo>/SUNRGBD_DATA/` so that
-  the sibling folders `SUNRGBD`, `SUNRGBDMetaData`, and `SUNRGBDtoolbox` match
-  the expected structure.
-* Update `MODEL_PATH` if your Qwen checkpoint lives elsewhere.
-* The script automatically reads category names from `SUNRGBDMetaData` when
-  available; otherwise it falls back to a default list of common indoor
-  classes.
-* Each output directory contains the raw response (`result.txt`) and parsed 3D
-  bounding boxes (`result.json`).
+ **Dataset layout** – Place the official SUN RGB-D release inside
+  `<repo>/SUNRGBD_DATA/`. The script scans the `SUNRGBD` folder for image files
+  (common extensions only) and uses the `SUNRGBDMetaData` folder to load the
+  class list when present; otherwise it falls back to a built-in set of indoor
+  categories.
+* **Model & device** – Update `MODEL_PATH` if your Qwen checkpoint lives
+  elsewhere. Inference runs in BF16 with `device_map="auto"`, so it will prefer
+  GPUs when available and fall back to CPU otherwise.
+* **Prompt & recovery** – For each image the script issues a chat-style prompt
+  that instructs the model to reply with JSON detections. It stores the raw
+  response as `result.txt`, attempts to parse the JSON directly, and applies a
+  regex-based fallback to recover partial objects when the response is noisy.
+* **Coordinate handling** – Successful detections are converted from the
+  normalized 0–1000 space used in the prompt into pixel space for center
+  coordinates and box dimensions while preserving the depth, center_z, heading,
+  and optional score fields. Invalid or incomplete entries are skipped with a
+  warning.
+* **Outputs** – Each image-specific folder contains the filtered detections in
+  `result.json` (absolute pixel units) alongside the raw text response
+  (`result.txt`). Re-run with `--skip-existing false` to overwrite prior
+  results.
 
 ## `run_vlm_detect.py`
 
