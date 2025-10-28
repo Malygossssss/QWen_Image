@@ -7,7 +7,7 @@ from itertools import product
 
 # === 1. 读取mat文件 ===
 meta = sio.loadmat('SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
-sample = meta['SUNRGBDMeta'][0][1] # 示例
+sample = meta['SUNRGBDMeta'][0][10] # 示例
 
 K = sample['K']  # 相机内参矩阵
 rgb_path = sample['rgbpath'][0]     # RGB图片路径
