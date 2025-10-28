@@ -6,7 +6,7 @@ import os
 from itertools import product
 
 # === 1. 读取mat文件 ===
-meta = sio.loadmat('/mnt/pub/wyf/workspace/image_identification/SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
+meta = sio.loadmat('SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
 sample = meta['SUNRGBDMeta'][0][0]  # 示例取第一张
 
 K = sample['K']  # 相机内参矩阵
@@ -16,7 +16,7 @@ rgb_path = sample['rgbpath'][0]     # RGB图片路径
 # 旧的前缀（原始数据作者电脑）
 old_prefix = "/n/fs/sun3d/data/SUNRGBD/"
 # 你的本地前缀
-new_prefix = "/mnt/pub/wyf/workspace/image_identification/SUNRGBD_DATA/SUNRGBD/"
+new_prefix = "SUNRGBD_DATA/SUNRGBD/"
 
 # 替换路径
 rgb_path = rgb_path.replace(old_prefix, new_prefix)
@@ -31,7 +31,7 @@ else:
 bboxes = sample['groundtruth3DBB'][0]  # 3D框数组
 print(bboxes.dtype.names)
 
-R_tilt = np.asarray(sample['Rtilt'])  # 将世界坐标系转换到相机坐标系
+R_tilt = np.asarray(sample['Rtilt'])  # 将对齐重力的世界坐标旋转回相机坐标系
 
 # === 2. 打开RGB图像 ===
 img = cv2.imread(rgb_path)
@@ -47,23 +47,28 @@ def project_points(points_3d, K):
 
 # === 4. 遍历每个3D框 ===
 for bb in bboxes:
-    centroid = np.asarray(bb['centroid']).reshape(3)
-    coeffs = np.asarray(bb['coeffs']).reshape(3)
-    basis = np.asarray(bb['basis'])  # 3x3，每列是一个方向的单位向量
+    centroid = np.asarray(bb['centroid'], dtype=np.float64).reshape(3)
+    coeffs = np.asarray(bb['coeffs'], dtype=np.float64).reshape(3)
+    basis = np.asarray(bb['basis'], dtype=np.float64)  # 3x3，每列是一个方向的单位向量
 
     # 构造 8 个顶点：coeffs 是每个方向的半轴长度，basis 的列向量是对应的单位方向
-    corner_signs = np.array(list(product([-1, 1], repeat=3)))
-    offsets = (basis @ (corner_signs * coeffs).T).T
-    corners_world = centroid + offsets
+    corner_signs = np.array(list(product([-1, 1], repeat=3)), dtype=np.float64)
+    # (3,8) => 每列是一个 corner 的局部坐标偏移
+    corner_offsets = (corner_signs.T * coeffs[:, None])
+    corners_world = (basis @ corner_offsets).T + centroid
 
-    # 将对齐重力的坐标转换回相机坐标
+    # 将对齐重力的世界坐标转换到相机坐标系
     corners_camera = (R_tilt.T @ corners_world.T).T
+
+    # 如果框被裁剪在摄像机后面，则跳过，避免投影出现极端值
+    if np.any(corners_camera[:, 2] <= 1e-3):
+        continue
 
     # 投影到2D
     corners_img = project_points(corners_camera, K)
 
     # 使用符号组合自动找出需要连接的棱
-    corners_int = corners_img.astype(int)
+    corners_int = np.round(corners_img).astype(int)
     for i in range(len(corner_signs)):
         for j in range(i + 1, len(corner_signs)):
             # 两个顶点符号只有一个维度不同 => 一条棱
