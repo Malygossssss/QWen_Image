@@ -1,13 +1,13 @@
-import scipy.io as sio
-import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import numpy as np
+import scipy.io as sio
 import os
 from itertools import product
 
 # === 1. 读取mat文件 ===
 meta = sio.loadmat('SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
-sample = meta['SUNRGBDMeta'][0][0]  # 示例取第一张
+sample = meta['SUNRGBDMeta'][0][2]  # 示例
 
 K = sample['K']  # 相机内参矩阵
 rgb_path = sample['rgbpath'][0]     # RGB图片路径
@@ -31,7 +31,36 @@ else:
 bboxes = sample['groundtruth3DBB'][0]  # 3D框数组
 print(bboxes.dtype.names)
 
-R_tilt = np.asarray(sample['Rtilt'])  # 将对齐重力的世界坐标旋转回相机坐标系
+def sunrgbd_to_camera(points: np.ndarray) -> np.ndarray:
+    """Convert SUNRGBD gravity-aligned coordinates to the camera frame.
+
+    In the SUNRGBD annotations the axes are defined as:
+        - x points to the right of the camera
+        - y points forward from the camera (depth)
+        - z points upward (aligned with gravity)
+
+    The OpenCV camera frame used for projection expects:
+        - x pointing right
+        - y pointing down
+        - z pointing forward
+
+    Therefore we keep the x component, map the forward (y) axis to the
+    camera z axis, and flip the sign of the vertical axis so that positive
+    values point downwards in image space.
+    """
+
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must be of shape (N, 3)")
+
+    x = points[:, 0]
+    y_forward = points[:, 1]
+    z_up = points[:, 2]
+
+    x_cam = x
+    y_cam = -z_up
+    z_cam = y_forward
+
+    return np.stack([x_cam, y_cam, z_cam], axis=1)
 
 # === 2. 打开RGB图像 ===
 img = cv2.imread(rgb_path)
@@ -57,8 +86,8 @@ for bb in bboxes:
     corner_offsets = (corner_signs.T * coeffs[:, None])
     corners_world = (basis @ corner_offsets).T + centroid
 
-    # 将对齐重力的世界坐标转换到相机坐标系
-    corners_camera = (R_tilt.T @ corners_world.T).T
+    # 将 SUNRGBD 的坐标轴映射到 OpenCV 相机坐标系
+    corners_camera = sunrgbd_to_camera(corners_world)
 
     # 如果框被裁剪在摄像机后面，则跳过，避免投影出现极端值
     if np.any(corners_camera[:, 2] <= 1e-3):
@@ -78,6 +107,9 @@ for bb in bboxes:
 # === 5. 显示结果 ===
 plt.imshow(img)
 plt.axis('off')
-save_path = "/mnt/pub/wyf/workspace/image_identification/visual_3bbox_output/sunrgbd_vis_3dbbox.jpg"
+
+output_dir = os.path.join(os.path.dirname(__file__), "visual_3bbox_output")
+os.makedirs(output_dir, exist_ok=True)
+save_path = os.path.join(output_dir, "sunrgbd_vis_3dbbox.jpg")
 plt.imsave(save_path, img)
 print(f"✅ 可视化结果已保存到: {save_path}")
