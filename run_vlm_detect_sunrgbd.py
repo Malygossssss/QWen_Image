@@ -2,11 +2,10 @@ import os
 import json
 import tarfile
 import torch
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 import re
-import math
-from typing import List, Optional
+from typing import List
 import argparse
 
 
@@ -143,240 +142,6 @@ def recover_partial_detections(raw_text: str):
             continue
     return recovered if recovered else None
 
-
-def _parse_numeric_list(raw_value) -> Optional[List[float]]:
-    if isinstance(raw_value, (list, tuple)):
-        try:
-            return [float(v) for v in raw_value]
-        except (TypeError, ValueError):
-            return None
-    if isinstance(raw_value, str):
-        try:
-            candidate = json.loads(raw_value)
-        except json.JSONDecodeError:
-            candidate = None
-        if isinstance(candidate, (list, tuple)):
-            try:
-                return [float(v) for v in candidate]
-            except (TypeError, ValueError):
-                return None
-    return None
-
-def _scale_from_unit_interval(value: float, length: int) -> float:
-    """Scale a value expressed in the [-1, 1] range to absolute pixels."""
-
-    # Clamp to avoid numerical noise leaking outside of [-1, 1]
-    clamped = max(-1.0, min(1.0, value))
-    return (clamped + 1.0) / 2.0 * length
-
-def convert_relative_to_absolute_3d(detections, image_width, image_height):
-    """Convert relative 3D bbox coordinates ([-1, 1]) to pixel coordinates and keep depth info."""
-    converted = []
-    for det in detections:
-        if not isinstance(det, dict):
-            print(f"⚠️ 跳过异常检测项：{det}")
-            continue
-
-        bbox3d = det.get("bbox_3d")
-        label_name = det.get("label") or det.get("category") or det.get("class") or "unknown"
-
-        result = {"label": label_name}
-
-        parsed_bbox3d = _parse_numeric_list(bbox3d) if bbox3d is not None else None
-        if parsed_bbox3d and len(parsed_bbox3d) >= 6:
-            converted_bbox3d = parsed_bbox3d[:7]
-            if len(converted_bbox3d) < 7:
-                converted_bbox3d.extend([0.0] * (7 - len(converted_bbox3d)))
-
-            converted_bbox3d[0] = _scale_from_unit_interval(converted_bbox3d[0], image_width)
-            converted_bbox3d[1] = _scale_from_unit_interval(converted_bbox3d[1], image_height)
-            converted_bbox3d[3] = max(0.0, _scale_from_unit_interval(converted_bbox3d[3], image_width))
-            converted_bbox3d[4] = max(0.0, _scale_from_unit_interval(converted_bbox3d[4], image_height))
-            if len(converted_bbox3d) > 5:
-                converted_bbox3d[5] = max(
-                    0.0,
-                    _scale_from_unit_interval(
-                        converted_bbox3d[5],
-                        max(image_width, image_height),
-                    ),
-                )
-
-            result["bbox_3d"] = converted_bbox3d
-
-        if "score" in det:
-            try:
-                result["score"] = float(det["score"])
-            except (TypeError, ValueError):
-                pass
-
-        if "bbox_3d" not in result:
-            print(f"⚠️ 跳过缺少有效3D边界框的检测项：{det}")
-            continue
-
-        converted.append(result)
-    return converted
-
-def _choose_color(label: str):
-    palette = [
-        (255, 99, 71),
-        (60, 179, 113),
-        (65, 105, 225),
-        (238, 130, 238),
-        (255, 215, 0),
-        (70, 130, 180),
-    ]
-    if not label:
-        return palette[0]
-    return palette[hash(label) % len(palette)]
-
-def _clip_point(x: float, y: float, width: int, height: int):
-    return (
-        max(0, min(width - 1, int(round(x)))),
-        max(0, min(height - 1, int(round(y)))),
-    )
-
-def _save_visualized_bboxes(image: Image.Image, detections, output_path: str):
-    if not detections:
-        return
-
-    annotated = image.copy()
-    draw = ImageDraw.Draw(annotated)
-    try:
-        font = ImageFont.truetype("arial.ttf", 14)
-    except (OSError, IOError):
-        font = ImageFont.load_default()
-
-    width, height = annotated.size
-
-    for det in detections:
-        if not isinstance(det, dict):
-            continue
-        bbox3d = det.get("bbox_3d")
-        if not isinstance(bbox3d, (list, tuple)) or len(bbox3d) < 5:
-            continue
-
-        try:
-            cx = float(bbox3d[0])
-            cy = float(bbox3d[1])
-            box_width = float(bbox3d[3])
-            box_height = float(bbox3d[4])
-            depth_value = float(bbox3d[5]) if len(bbox3d) > 5 else box_width
-            heading = float(bbox3d[6]) if len(bbox3d) > 6 else 0.0
-        except (TypeError, ValueError):
-            continue
-
-        if box_width <= 0 or box_height <= 0:
-            continue
-
-        if -1.1 <= depth_value <= 1.1:
-            depth_pixels = max(1.0, _scale_from_unit_interval(depth_value, max(width, height)))
-        else:
-            depth_pixels = max(1.0, abs(depth_value))
-
-        half_w = box_width / 2.0
-        half_h = box_height / 2.0
-        half_d = depth_pixels / 2.0
-
-        cos_heading = math.cos(heading)
-        sin_heading = math.sin(heading)
-
-        axis_w = (cos_heading * half_w, sin_heading * half_w)
-        axis_d = (-sin_heading * half_d, cos_heading * half_d)
-
-        front_offset = (-axis_d[0], -axis_d[1])
-        back_offset = axis_d
-
-        corners = {
-            "front_top_left": (
-                cx - axis_w[0] + front_offset[0],
-                cy - half_h - axis_w[1] + front_offset[1],
-            ),
-            "front_top_right": (
-                cx + axis_w[0] + front_offset[0],
-                cy - half_h + axis_w[1] + front_offset[1],
-            ),
-            "front_bottom_right": (
-                cx + axis_w[0] + front_offset[0],
-                cy + half_h + axis_w[1] + front_offset[1],
-            ),
-            "front_bottom_left": (
-                cx - axis_w[0] + front_offset[0],
-                cy + half_h - axis_w[1] + front_offset[1],
-            ),
-            "back_top_left": (
-                cx - axis_w[0] + back_offset[0],
-                cy - half_h - axis_w[1] + back_offset[1],
-            ),
-            "back_top_right": (
-                cx + axis_w[0] + back_offset[0],
-                cy - half_h + axis_w[1] + back_offset[1],
-            ),
-            "back_bottom_right": (
-                cx + axis_w[0] + back_offset[0],
-                cy + half_h + axis_w[1] + back_offset[1],
-            ),
-            "back_bottom_left": (
-                cx - axis_w[0] + back_offset[0],
-                cy + half_h - axis_w[1] + back_offset[1],
-            ),
-        }
-
-        clipped_corners = {
-            name: _clip_point(px, py, width, height)
-            for name, (px, py) in corners.items()
-        }
-
-        color = _choose_color(det.get("label", ""))
-        
-        edges = [
-            ("front_top_left", "front_top_right"),
-            ("front_top_right", "front_bottom_right"),
-            ("front_bottom_right", "front_bottom_left"),
-            ("front_bottom_left", "front_top_left"),
-            ("back_top_left", "back_top_right"),
-            ("back_top_right", "back_bottom_right"),
-            ("back_bottom_right", "back_bottom_left"),
-            ("back_bottom_left", "back_top_left"),
-            ("front_top_left", "back_top_left"),
-            ("front_top_right", "back_top_right"),
-            ("front_bottom_right", "back_bottom_right"),
-            ("front_bottom_left", "back_bottom_left"),
-        ]
-
-        for start, end in edges:
-            p0 = clipped_corners[start]
-            p1 = clipped_corners[end]
-            draw.line([p0[0], p0[1], p1[0], p1[1]], fill=color, width=3)
-
-        label_text = str(det.get("label", ""))
-        if label_text:
-            try:
-                text_bbox = draw.textbbox((0, 0), label_text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-            except AttributeError:
-                text_width, text_height = font.getsize(label_text)
-            
-            anchor = min(
-                (
-                    clipped_corners["front_top_left"],
-                    clipped_corners["front_top_right"],
-                    clipped_corners["back_top_left"],
-                    clipped_corners["back_top_right"],
-                ),
-                key=lambda pt: (pt[1], pt[0]),
-            )
-            text_x = max(0, min(width - text_width - 6, anchor[0]))
-            text_y = max(0, anchor[1] - text_height - 6)
-            draw.rectangle(
-                [text_x, text_y, text_x + text_width + 6, text_y + text_height + 4],
-                fill=color,
-            )
-            draw.text((text_x + 3, text_y + 2), label_text, fill=(0, 0, 0), font=font)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    annotated.save(output_path)
-
 def _str_to_bool(value: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -466,7 +231,7 @@ for image_path in sorted(image_files):
     prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
 
     inputs = processor(text=prompt, images=image, return_tensors="pt").to(DEVICE)
-    output = model.generate(**inputs, max_new_tokens=4096)
+    output = model.generate(**inputs, max_new_tokens=1024)
 
     result_text = processor.batch_decode(output, skip_special_tokens=True)[0]
     print(f"\n📷 {relative_path} Raw model output:\n", result_text)
@@ -548,19 +313,15 @@ for image_path in sorted(image_files):
             detections = None
 
         if detections:
-            normalized = []
+            filtered = []
             dropped_any = False
             for d in detections:
                 if not isinstance(d, dict):
                     print(f"⚠️ 忽略非字典检测项：{d}")
                     dropped_any = True
                     continue
-                if "category" in d and "label" not in d:
-                    d["label"] = d.pop("category")
-                if "class" in d and "label" not in d:
-                    d["label"] = d.pop("class")
-                normalized.append(d)
-            detections = normalized
+                filtered.append(d)
+            detections = filtered
             if dropped_any and not detections:
                 parse_failed = True
                 detections = None
@@ -586,25 +347,11 @@ for image_path in sorted(image_files):
     if detections is None:
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump([], f, ensure_ascii=False, indent=2)
+        image.close()
         print(f"⚠️ {relative_path} 未解析到检测结果，已保存空结果文件")
         continue
 
-    abs_detections = convert_relative_to_absolute_3d(
-        detections,
-        image.width,
-        image.height,
-    )
-
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump(abs_detections, f, ensure_ascii=False, indent=2)
+        json.dump(detections, f, ensure_ascii=False, indent=2)
     print(f"✅ 检测结果已保存到 {save_dir}")
-
-    visualization_path = os.path.join(save_dir, "visualization.jpg")
-    try:
-        _save_visualized_bboxes(image, abs_detections, visualization_path)
-    except Exception as exc:
-        print(f"⚠️ 无法生成可视化结果: {exc}")
-    else:
-        print(f"🖼️ 检测结果可视化已保存到 {visualization_path}")
-
     image.close()
