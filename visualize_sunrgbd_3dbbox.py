@@ -7,10 +7,11 @@ from itertools import product
 
 # === 1. 读取mat文件 ===
 meta = sio.loadmat('SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
-sample = meta['SUNRGBDMeta'][0][2]  # 示例
+sample = meta['SUNRGBDMeta'][0][1] # 示例
 
 K = sample['K']  # 相机内参矩阵
 rgb_path = sample['rgbpath'][0]     # RGB图片路径
+Rtilt = np.asarray(sample['Rtilt'], dtype=np.float64)
 
 # === 替换路径前缀 ===
 # 旧的前缀（原始数据作者电脑）
@@ -87,7 +88,11 @@ for bb in bboxes:
     corners_world = (basis @ corner_offsets).T + centroid
 
     # 将 SUNRGBD 的坐标轴映射到 OpenCV 相机坐标系
-    corners_camera = sunrgbd_to_camera(corners_world)
+    # 先使用 Rtilt 将重力对齐坐标系旋转到相机坐标系
+    corners_camera = (Rtilt.T @ corners_world.T).T
+
+    # 再将 SUNRGBD 的相机坐标映射到 OpenCV 坐标轴约定
+    corners_camera = sunrgbd_to_camera(corners_camera)
 
     # 如果框被裁剪在摄像机后面，则跳过，避免投影出现极端值
     if np.any(corners_camera[:, 2] <= 1e-3):
