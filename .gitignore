@@ -222,7 +222,8 @@ coco_outputs/
 sunrgbd_outputs/
 visual_bbox_output/
 coco2017/
-SUNRGBD_DATA/
+# 忽略整个数据目录
+SUNRGBD_DATA/*
 gt_coco.json
 pred_coco.json
 *.zip

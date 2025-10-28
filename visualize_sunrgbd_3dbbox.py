@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 import os
+from itertools import product
 
 # === 1. 读取mat文件 ===
 meta = sio.loadmat('/mnt/pub/wyf/workspace/image_identification/SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
@@ -30,6 +31,8 @@ else:
 bboxes = sample['groundtruth3DBB'][0]  # 3D框数组
 print(bboxes.dtype.names)
 
+R_tilt = np.asarray(sample['Rtilt'])  # 将世界坐标系转换到相机坐标系
+
 # === 2. 打开RGB图像 ===
 img = cv2.imread(rgb_path)
 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -44,38 +47,28 @@ def project_points(points_3d, K):
 
 # === 4. 遍历每个3D框 ===
 for bb in bboxes:
-    centroid = bb['centroid'][0]
-    coeffs = bb['coeffs'][0]
-    
-    # ✅【修改1】将原本的 orient 改为 orientation（3x3旋转矩阵）
-    if 'orientation' in bb.dtype.names:
-        R = bb['orientation']
-    else:
-        R = np.eye(3)  # 若缺失则用单位矩阵
+    centroid = np.asarray(bb['centroid']).reshape(3)
+    coeffs = np.asarray(bb['coeffs']).reshape(3)
+    basis = np.asarray(bb['basis'])  # 3x3，每列是一个方向的单位向量
 
-    # 构造立方体八个角点
-    l, h, w = coeffs
-    corners = np.array([
-        [ l/2,  h/2,  w/2],
-        [ l/2,  h/2, -w/2],
-        [-l/2,  h/2, -w/2],
-        [-l/2,  h/2,  w/2],
-        [ l/2, -h/2,  w/2],
-        [ l/2, -h/2, -w/2],
-        [-l/2, -h/2, -w/2],
-        [-l/2, -h/2,  w/2],
-    ])
-    
-    # ✅【修改2】使用 orientation 矩阵直接旋转 + 平移
-    corners_world = (R @ corners.T).T + centroid
+    # 构造 8 个顶点：coeffs 是每个方向的半轴长度，basis 的列向量是对应的单位方向
+    corner_signs = np.array(list(product([-1, 1], repeat=3)))
+    offsets = (basis @ (corner_signs * coeffs).T).T
+    corners_world = centroid + offsets
+
+    # 将对齐重力的坐标转换回相机坐标
+    corners_camera = (R_tilt.T @ corners_world.T).T
 
     # 投影到2D
-    corners_img = project_points(corners_world, K)
+    corners_img = project_points(corners_camera, K)
 
-    # 绘制立方体边
-    corners_img = corners_img.astype(int)
-    for i, j in [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]:
-        cv2.line(img, tuple(corners_img[i]), tuple(corners_img[j]), (255,0,0), 2)
+    # 使用符号组合自动找出需要连接的棱
+    corners_int = corners_img.astype(int)
+    for i in range(len(corner_signs)):
+        for j in range(i + 1, len(corner_signs)):
+            # 两个顶点符号只有一个维度不同 => 一条棱
+            if np.sum(np.abs(corner_signs[i] - corner_signs[j])) == 2:
+                cv2.line(img, tuple(corners_int[i]), tuple(corners_int[j]), (255, 0, 0), 2)
 
 # === 5. 显示结果 ===
 plt.imshow(img)
