@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 import re
-from typing import List
+from typing import List, Optional, Sequence, Set
 import argparse
 
 
@@ -131,6 +131,155 @@ def _build_recover_pattern(class_names: List[str]) -> re.Pattern:
 
 _RECOVER_PATTERN = _build_recover_pattern(_DEF_CATEGORIES)
 
+def _normalize_split_entry(entry: str) -> Optional[str]:
+    if not entry:
+        return None
+    normalized = entry.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    normalized = normalized.lstrip("./")
+    if normalized.startswith("SUNRGBD/"):
+        normalized = normalized[len("SUNRGBD/") :]
+    return normalized or None
+
+
+def _parse_split_stream(stream) -> Set[str]:
+    try:
+        raw = stream.read()
+    except OSError:
+        return set()
+    if not raw:
+        return set()
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="ignore")
+    else:
+        text = str(raw)
+
+    entries: Set[str] = set()
+    for line in text.splitlines():
+        candidate = _normalize_split_entry(line)
+        if not candidate:
+            continue
+        if not (
+            candidate.lower().startswith(("kv1/", "kv2/", "realsense/", "xtion/"))
+            or "/image" in candidate.lower()
+        ):
+            continue
+        entries.add(candidate)
+        entries.add(candidate.rstrip("/"))
+        if candidate.endswith(".jpg"):
+            entries.add(candidate[:-4])
+        if not candidate.startswith("SUNRGBD/"):
+            entries.add("SUNRGBD/" + candidate)
+    return entries
+
+
+def _load_sunrgbd_split(metadata_root: str, split: str = "test") -> Optional[Set[str]]:
+    split = split.lower()
+
+    def _load_from_path(path: str) -> Set[str]:
+        try:
+            with open(path, "rb") as f:
+                entries = _parse_split_stream(f)
+        except OSError:
+            return set()
+        if entries:
+            print(f"✅ Loaded {len(entries)} entries from split file: {path}")
+        return entries
+
+    candidate_files = [
+        os.path.join(metadata_root, f"sunrgbd_{split}.txt"),
+        os.path.join(metadata_root, f"sunrgbd_{split}_list.txt"),
+        os.path.join(metadata_root, f"{split}_data_list.txt"),
+        os.path.join(metadata_root, f"{split}.txt"),
+    ]
+
+    for path in candidate_files:
+        if os.path.isfile(path):
+            entries = _load_from_path(path)
+            if entries:
+                return entries
+
+    for root_dir, _, files in os.walk(metadata_root):
+        for file_name in files:
+            lower = file_name.lower()
+            if split not in lower:
+                continue
+            if not lower.endswith((".txt", ".lst", ".csv")):
+                continue
+            path = os.path.join(root_dir, file_name)
+            entries = _load_from_path(path)
+            if entries:
+                return entries
+
+    archive_candidates = [
+        os.path.join(metadata_root, "sunrgbd_train_test_labels.tar.gz"),
+        os.path.join(metadata_root, "train13labels.tgz"),
+        os.path.join(metadata_root, "test13labels.tgz"),
+    ]
+
+    for archive_path in archive_candidates:
+        if not os.path.isfile(archive_path):
+            continue
+        try:
+            with tarfile.open(archive_path, "r:*") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile():
+                        continue
+                    base_name = os.path.basename(member.name).lower()
+                    if split not in base_name:
+                        continue
+                    if not base_name.endswith((".txt", ".lst", ".csv")):
+                        continue
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        continue
+                    entries = _parse_split_stream(extracted)
+                    if entries:
+                        print(
+                            "✅ Loaded {} entries from archive split file: {}".format(
+                                len(entries), member.name
+                            )
+                        )
+                        return entries
+        except (tarfile.TarError, OSError):
+            continue
+
+    print(
+        f"⚠️ Unable to locate SUNRGBD '{split}' split definition under {metadata_root}."
+    )
+    return None
+
+
+def _relative_image_keys(relative_path: str) -> Sequence[str]:
+    normalized = relative_path.replace("\\", "/").lstrip("./")
+    keys = {normalized}
+    if normalized.startswith("SUNRGBD/"):
+        keys.add(normalized[len("SUNRGBD/") :])
+    else:
+        keys.add("SUNRGBD/" + normalized)
+    stem = os.path.splitext(normalized)[0]
+    keys.add(stem)
+    if stem.startswith("SUNRGBD/"):
+        keys.add(stem[len("SUNRGBD/") :])
+    dir_path = os.path.dirname(normalized)
+    keys.add(dir_path)
+    if dir_path.startswith("SUNRGBD/"):
+        keys.add(dir_path[len("SUNRGBD/") :])
+    parent = os.path.dirname(dir_path)
+    if parent:
+        keys.add(parent)
+        if parent.startswith("SUNRGBD/"):
+            keys.add(parent[len("SUNRGBD/") :])
+    grand_parent = os.path.dirname(parent)
+    if grand_parent:
+        keys.add(grand_parent)
+        if grand_parent.startswith("SUNRGBD/"):
+            keys.add(grand_parent[len("SUNRGBD/") :])
+    return list(keys)
 
 def recover_partial_detections(raw_text: str):
     """Recover detection results from partial JSON fragments."""
@@ -204,14 +353,45 @@ for root_dir, _, files in os.walk(SUNRGBD_ROOT):
 if not image_files:
     raise RuntimeError(f"No image files found under {SUNRGBD_ROOT}.")
 
-for image_path in sorted(image_files):
+test_split = _load_sunrgbd_split(METADATA_ROOT, split="test")
+if test_split:
+    before_count = len(image_files)
+    filtered_files = []
+    for path in image_files:
+        relative_path = os.path.relpath(path, SUNRGBD_ROOT)
+        keys = _relative_image_keys(relative_path)
+        if any(key in test_split for key in keys):
+            filtered_files.append(path)
+    image_files = filtered_files
+    if not image_files:
+        raise RuntimeError(
+            "Located SUNRGBD test split but none of the dataset images matched it. "
+            "Please verify the dataset structure."
+        )
+    removed = before_count - len(image_files)
+    print(
+        f"🧪 Filtering to SUNRGBD test split: {len(image_files)} images (removed {removed})."
+    )
+else:
+    raise RuntimeError(
+        "Unable to locate the SUNRGBD test split definition. "
+        "Please ensure the official split files are available under the metadata directory."
+    )
+
+sorted_image_files = sorted(image_files)
+total_images = len(sorted_image_files)
+
+for index, image_path in enumerate(sorted_image_files, start=1):
     relative_path = os.path.relpath(image_path, SUNRGBD_ROOT)
     relative_stem = os.path.splitext(relative_path)[0]
     save_dir = os.path.join(OUTPUT_ROOT, relative_stem)
     result_json = os.path.join(save_dir, "result.json")
 
     if args.skip_existing and os.path.exists(result_json):
-        print(f"⏩ 已检测到 {result_json}，跳过 {relative_path}")
+        remaining = total_images - index
+        print(
+            f"⏩ 已检测到 {result_json}，跳过 {relative_path}。还剩 {remaining} 张待处理"
+        )
         continue
 
     image = Image.open(image_path).convert("RGB")
@@ -348,10 +528,15 @@ for image_path in sorted(image_files):
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump([], f, ensure_ascii=False, indent=2)
         image.close()
-        print(f"⚠️ {relative_path} 未解析到检测结果，已保存空结果文件")
+        remaining = total_images - index
+        print(
+            f"⚠️ {relative_path} 未解析到检测结果，已保存空结果文件。还剩 {remaining} 张待处理"
+        )
         continue
 
     with open(result_path, "w", encoding="utf-8") as f:
         json.dump(detections, f, ensure_ascii=False, indent=2)
     print(f"✅ 检测结果已保存到 {save_dir}")
     image.close()
+    remaining = total_images - index
+    print(f"📊 剩余待处理图像数量：{remaining}")
