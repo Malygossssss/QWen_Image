@@ -219,10 +219,17 @@ __marimo__/
 Pascal-VOC-2012/
 outputs/
 coco_outputs/
-sunrgbd_outputs/
+
+sunrgbd_outputs/*
+!sunrgbd_outputs/kv2/
+sunrgbd_outputs/kv2/*
+!sunrgbd_outputs/kv2/kinect2data/
+sunrgbd_outputs/kv2/kinect2data/*
+!sunrgbd_outputs/kv2/kinect2data/000002_2014-05-26_14-23-37_260595134347_rgbf000103-resize/
+
 visual_bbox_output/
 coco2017/
-# 忽略整个数据目录
+
 SUNRGBD_DATA/*
 !SUNRGBD_DATA/SUNRGBD/
 SUNRGBD_DATA/SUNRGBD/*

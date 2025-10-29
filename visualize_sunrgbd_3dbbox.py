@@ -95,8 +95,8 @@ for bb in bboxes:
     corners_camera = sunrgbd_to_camera(corners_camera)
 
     # 如果框被裁剪在摄像机后面，则跳过，避免投影出现极端值
-    if np.any(corners_camera[:, 2] <= 1e-3):
-        continue
+    # if np.any(corners_camera[:, 2] <= 1e-3):
+    #     continue
 
     # 投影到2D
     corners_img = project_points(corners_camera, K)
