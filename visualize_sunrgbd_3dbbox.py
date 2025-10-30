@@ -2,12 +2,13 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io as sio
+import json
 import os
 from itertools import product
 
 # === 1. 读取mat文件 ===
 meta = sio.loadmat('SUNRGBD_DATA/SUNRGBDMetaData/SUNRGBDMeta3DBB_v2.mat')
-sample = meta['SUNRGBDMeta'][0][10] # 示例
+sample = meta['SUNRGBDMeta'][0][0] # 示例
 
 K = sample['K']  # 相机内参矩阵
 rgb_path = sample['rgbpath'][0]     # RGB图片路径
@@ -31,6 +32,8 @@ else:
 
 bboxes = sample['groundtruth3DBB'][0]  # 3D框数组
 print(bboxes.dtype.names)
+
+corner_signs = np.array(list(product([-1, 1], repeat=3)), dtype=np.float64)
 
 def sunrgbd_to_camera(points: np.ndarray) -> np.ndarray:
     """Convert SUNRGBD gravity-aligned coordinates to the camera frame.
@@ -82,7 +85,6 @@ for bb in bboxes:
     basis = np.asarray(bb['basis'], dtype=np.float64)  # 3x3，每列是一个方向的单位向量
 
     # 构造 8 个顶点：coeffs 是每个方向的半轴长度，basis 的列向量是对应的单位方向
-    corner_signs = np.array(list(product([-1, 1], repeat=3)), dtype=np.float64)
     # (3,8) => 每列是一个 corner 的局部坐标偏移
     corner_offsets = (corner_signs.T * coeffs[:, None])
     corners_world = (basis @ corner_offsets).T + centroid
@@ -109,7 +111,53 @@ for bb in bboxes:
             if np.sum(np.abs(corner_signs[i] - corner_signs[j])) == 2:
                 cv2.line(img, tuple(corners_int[i]), tuple(corners_int[j]), (255, 0, 0), 2)
 
-# === 5. 显示结果 ===
+# === 5. 叠加预测结果（如有） ===
+relative_rgb = os.path.relpath(rgb_path, new_prefix)
+pred_json_path = os.path.join(
+    'sunrgbd_outputs', os.path.splitext(relative_rgb)[0], 'result.json'
+)
+
+if os.path.exists(pred_json_path):
+    print("✅ 找到预测结果:", pred_json_path)
+    try:
+        with open(pred_json_path, 'r', encoding='utf-8') as f:
+            preds = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print("⚠️ 无法读取预测结果:", exc)
+        preds = []
+
+    if isinstance(preds, list):
+        for pred in preds:
+            box = pred.get('bbox_3d') or pred.get('bbox3d')
+            if not box or len(box) < 6:
+                continue
+
+            try:
+                center = np.asarray(box[:3], dtype=np.float64).reshape(3)
+                lengths = np.asarray(box[3:6], dtype=np.float64).reshape(3)
+            except (ValueError, TypeError):
+                continue
+
+            if np.any(lengths <= 0):
+                continue
+
+            # 预测框按照与真值相同的方式投影
+            corner_offsets = (corner_signs * (lengths / 2.0))
+            corners_world = corner_offsets + center
+
+            corners_camera = (Rtilt.T @ corners_world.T).T
+            corners_camera = sunrgbd_to_camera(corners_camera)
+            corners_img = project_points(corners_camera, K)
+            corners_int = np.round(corners_img).astype(int)
+
+            for i in range(len(corner_signs)):
+                for j in range(i + 1, len(corner_signs)):
+                    if np.sum(np.abs(corner_signs[i] - corner_signs[j])) == 2:
+                        cv2.line(img, tuple(corners_int[i]), tuple(corners_int[j]), (0, 255, 0), 2)
+else:
+    print("ℹ️ 未找到对应的预测 result.json 文件:", pred_json_path)
+
+# === 6. 显示结果 ===
 plt.imshow(img)
 plt.axis('off')
 
