@@ -1,11 +1,12 @@
 import os
 import json
 import tarfile
+import math
 import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 import re
-from typing import List, Optional, Sequence, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 import argparse
 
 
@@ -32,10 +33,12 @@ _DEF_CATEGORIES = [
 
 
 _DEF_PROMPT_GUIDANCE = (
-    "Return each detection using JSON objects formatted as {\"label\": \"class_name\", "
-    "\"bbox_3d\": [center_x, center_y, center_z, width, height, depth, heading]}. "
-    "Normalize center_x, center_y, width, and height to the 0-1000 range relative to the image size. "
-    "Express center_z and depth in meters and heading in radians."
+    "Return each detection as a JSON object with SUN RGB-D style fields: "
+    "{\"classname\": \"class_name\", \"label\": class_index, \"centroid\": [x, y, z], "
+    "\"coeffs\": [sx, sy, sz], \"basis\": [[bx1, bx2, bx3], [by1, by2, by3], [bz1, bz2, bz3]], "
+    "\"orientation\": [ox, oy, oz]}. "
+    "Centroid coordinates and coeffs (half sizes) should be in meters. "
+    "Basis is a 3x3 rotation matrix (row-major) and orientation is the facing unit vector."
 )
 
 
@@ -130,6 +133,181 @@ def _build_recover_pattern(class_names: List[str]) -> re.Pattern:
 
 
 _RECOVER_PATTERN = _build_recover_pattern(_DEF_CATEGORIES)
+
+def _coerce_float_sequence(value: Union[str, Sequence, None]) -> Optional[List[float]]:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        result: List[float] = []
+        for item in value:
+            if isinstance(item, (int, float)):
+                result.append(float(item))
+            elif isinstance(item, str):
+                try:
+                    result.append(float(item))
+                except ValueError:
+                    continue
+        return result if result else None
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            numbers = re.findall(_NUMBER_PATTERN, value)
+            return [float(num) for num in numbers] if numbers else None
+        else:
+            if isinstance(parsed, (list, tuple)):
+                return _coerce_float_sequence(parsed)
+            if isinstance(parsed, (int, float)):
+                return [float(parsed)]
+    return None
+
+
+def _normalize_classname(raw: Union[str, int, float, None], class_names: Sequence[str]) -> Tuple[str, Optional[int]]:
+    classname = None
+    label_index: Optional[int] = None
+    if isinstance(raw, (int, float)):
+        candidate = int(raw)
+        if 1 <= candidate <= len(class_names):
+            classname = class_names[candidate - 1]
+            label_index = candidate
+        else:
+            classname = str(candidate)
+            label_index = candidate
+    elif isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped:
+            classname = stripped
+            for idx, name in enumerate(class_names, start=1):
+                if stripped == name or stripped.lower() == name.lower():
+                    label_index = idx
+                    classname = name
+                    break
+    if classname is None:
+        classname = "unknown"
+    if label_index is None:
+        try:
+            idx = class_names.index(classname) + 1
+        except ValueError:
+            label_index = None
+        else:
+            label_index = idx
+    return classname, label_index
+
+
+def _yaw_to_basis_and_orientation(yaw: float) -> Tuple[List[List[float]], List[float]]:
+    c = math.cos(yaw)
+    s = math.sin(yaw)
+    basis = [
+        [c, -s, 0.0],
+        [s, c, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    orientation = [-s, -c, 0.0]
+    return basis, orientation
+
+
+def _orientation_to_yaw(orientation: Sequence[float]) -> Optional[float]:
+    if len(orientation) < 2:
+        return None
+    ox, oy = orientation[0], orientation[1]
+    if abs(ox) < 1e-8 and abs(oy) < 1e-8:
+        return None
+    return math.atan2(-ox, -oy)
+
+
+def _convert_detection_to_sunrgbd(
+    detection: Dict[str, object], class_names: Sequence[str]
+) -> Dict[str, object]:
+    raw_class = (
+        detection.get("classname")
+        or detection.get("class")
+        or detection.get("category")
+        or detection.get("label")
+    )
+    classname, label_index = _normalize_classname(raw_class, class_names)
+
+    bbox = detection.get("bbox_3d") or detection.get("bbox3d") or detection.get("box3d")
+    bbox_values = _coerce_float_sequence(bbox)
+
+    centroid = _coerce_float_sequence(
+        detection.get("centroid")
+        or detection.get("center")
+        or detection.get("center_3d")
+        or (bbox_values[:3] if bbox_values and len(bbox_values) >= 3 else None)
+    )
+    if centroid is None:
+        centroid = [0.0, 0.0, 0.0]
+    else:
+        centroid = centroid[:3] + [0.0] * max(0, 3 - len(centroid))
+
+    coeffs = _coerce_float_sequence(detection.get("coeffs") or detection.get("sizes") or detection.get("dimensions") or detection.get("size"))
+    heading: Optional[float] = None
+    orientation = _coerce_float_sequence(detection.get("orientation"))
+    basis_values = detection.get("basis")
+
+    if coeffs is None and bbox_values and len(bbox_values) >= 6:
+        dims = bbox_values[3:6]
+        coeffs = [d / 2.0 for d in dims]
+        if len(bbox_values) >= 7:
+            heading = float(bbox_values[6])
+        if len(bbox_values) >= 9 and orientation is None:
+            orientation = bbox_values[6:9]
+
+    if coeffs is None:
+        coeffs = [0.5, 0.5, 0.5]
+    else:
+        coeffs = coeffs[:3] + [0.5] * max(0, 3 - len(coeffs))
+
+    if orientation is not None and len(orientation) >= 3:
+        orientation = orientation[:3] + [0.0] * max(0, 3 - len(orientation))
+        if heading is None:
+            inferred_yaw = _orientation_to_yaw(orientation)
+            if inferred_yaw is not None:
+                heading = inferred_yaw
+
+    basis: Optional[List[List[float]]] = None
+    if isinstance(basis_values, (list, tuple)) and len(basis_values) == 3:
+        rows: List[List[float]] = []
+        for row in basis_values:  # type: ignore[arg-type]
+            seq = _coerce_float_sequence(row)
+            if seq is None:
+                rows = []
+                break
+            rows.append((seq + [0.0, 0.0, 0.0])[:3])
+        if len(rows) == 3:
+            basis = rows
+
+    if basis is None:
+        if heading is None:
+            heading = 0.0
+        basis, default_orientation = _yaw_to_basis_and_orientation(heading)
+        if orientation is None:
+            orientation = default_orientation
+
+    if orientation is None:
+        orientation = [0.0, -1.0, 0.0]
+
+    result: Dict[str, object] = {
+        "classname": classname,
+        "label": label_index if label_index is not None else classname,
+        "centroid": [float(x) for x in centroid[:3]],
+        "coeffs": [float(x) for x in coeffs[:3]],
+        "basis": basis,
+        "orientation": [float(x) for x in orientation[:3]],
+    }
+
+    if "score" in detection:
+        result["score"] = detection["score"]
+    elif "confidence" in detection:
+        result["score"] = detection["confidence"]
+
+    for key in ("sequenceName", "sample_id", "id"):
+        if key in detection and key not in result:
+            result[key] = detection[key]
+
+    return result
 
 def _normalize_split_entry(entry: str) -> Optional[str]:
     if not entry:
@@ -534,8 +712,20 @@ for index, image_path in enumerate(sorted_image_files, start=1):
         )
         continue
 
+    formatted_detections = []
+    for det in detections:
+        if not isinstance(det, dict):
+            print(f"⚠️ 忽略非字典检测项：{det}")
+            continue
+        try:
+            converted = _convert_detection_to_sunrgbd(det, sunrgbd_classes)
+        except Exception as exc:
+            print(f"⚠️ 转换检测结果到 SUNRGBD 格式时出错: {exc}")
+            continue
+        formatted_detections.append(converted)
+
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump(detections, f, ensure_ascii=False, indent=2)
+        json.dump(formatted_detections, f, ensure_ascii=False, indent=2)
     print(f"✅ 检测结果已保存到 {save_dir}")
     image.close()
     remaining = total_images - index

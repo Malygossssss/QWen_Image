@@ -1,15 +1,11 @@
 user
-You are performing SUN RGB-D 3D object detection. Locate every instance that belongs to the following categories: 'bed', 'chair', 'sofa', 'table', 'desk', 'dresser', 'night_stand', 'bookshelf', 'bathtub', 'toilet', 'lamp', 'cabinet', 'refrigerator', 'sink', 'door', 'picture', 'tv', 'window'. Return each detection using JSON objects formatted as {"label": "class_name", "bbox_3d": [center_x, center_y, center_z, width, height, depth, heading]}. Normalize center_x, center_y, width, and height to the 0-1000 range relative to the image size. Express center_z and depth in meters and heading in radians.
+You are performing SUN RGB-D 3D object detection. Locate every instance that belongs to the following categories: 'bed', 'chair', 'sofa', 'table', 'desk', 'dresser', 'night_stand', 'bookshelf', 'bathtub', 'toilet', 'lamp', 'cabinet', 'refrigerator', 'sink', 'door', 'picture', 'tv', 'window'. Return each detection as a JSON object with SUN RGB-D style fields: {"classname": "class_name", "label": class_index, "centroid": [x, y, z], "coeffs": [sx, sy, sz], "basis": [[bx1, bx2, bx3], [by1, by2, by3], [bz1, bz2, bz3]], "orientation": [ox, oy, oz]}. Centroid coordinates and coeffs (half sizes) should be in meters. Basis is a 3x3 rotation matrix (row-major) and orientation is the facing unit vector.
 assistant
 ```json
 [
-	{"label": "bed", "bbox_3d": [0.92, 0.06, 3.71, 2.13, 1.56, 1.69, 0.78, 0.47, 0.85], "bbox_3d": [0.44, 0.55, 2.44, 0.53, 0.48, 1.04, 0.86, 0.45, 0.93], "label": "chair"},
-	{"label": "night_stand", "bbox_3d": [2.03, 0.45, 4.48, 0.51, 0.7, 0.57, 0.79, 0.46, 0.86], "label": "night_stand"},
-	{"label": "dresser", "bbox_3d": [-1.11, -0.27, 2.56, 0.62, 1.79, 1.42, 0.03, 0.03, 0.06], "label": "dresser"},
-	{"label": "dresser", "bbox_3d": [-0.88, -0.04, 3.67, 0.55, 0.96, 1.08, 0.03, 0.03, 0.06], "label": "dresser"},
-	{"label": "lamp", "bbox_3d": [2.16, -0.22, 4.47, 0.36, 0.75, 0.46, 0.78, 0.46, 0.85], "label": "lamp"},
-	{"label": "cabinet", "bbox_3d": [-1.11, -0.27, 2.56, 0.62, 1.79, 1.42, 0.03, 0.03, 0.06], "label": "cabinet"},
-	{"label": "cabinet", "bbox_3d": [-0.88, -0.04, 3.67, 0.55, 0.96, 1.08, 0.03, 0.03, 0.06], "label": "cabinet"},
-	{"label": "picture", "bbox_3d": [-0.76, -0.57, 3.75, 0.06, 0.32, 0.25, 0.03, 0.03, 0.06], "label": "picture"}
-]
-```
+	{"classname": "bed", "label": 0, "centroid": [0.81, 0.06, 3.97, 2.14, 1.58, 1.69, 0.95, 0.24, -0.98], "coeffs": [0.84, 0.88, 0.85], "basis": [[-0.99, -0.02, -0.02], [0.02, 0.99, 0.02], [0.02, 0.02, 0.99]], "orientation": [0.97, 0.22, -0.01]},
+	{"classname": "night_stand", "label": 0, "centroid": [2.33, 0.48, 4.78, 0.51, 0.7, 0.57, 0.95, 0.24, -0.98], "coeffs": [0.28, 0.38, 0.28], "basis": [[-0.99, -0.02, -0.02], [0.02, 0.99, 0.02], [0.02, 0.02, 0.99]], "orientation": [0.97, 0.22, -0.01]},
+	{"classname": "lamp", "label": 0, "centroid": [2.31, -0.23, 4.74, 0.38, 0.75, 0.38, 0.95, 0.24, -0.98], "coeffs": [0.28, 0.38, 0.28], "basis": [[-0.99, -0.02, -0.02], [0.02, 0.99, 0.02], [0.02, 0.02, 0.99]], "orientation": [0.97, 0.22, -0.01]},
+	{"classname": "dresser", "label": 0, "centroid": [-1.03, -0.21, 2.06, 0.6, 1.94, 1.33, 0.95, 0.24, -0.98], "coeffs": [0.28, 0.38, 0.28], "basis": [[-0.99, -0.02, -0.02], [0.02, 0.99, 0.02], [0.02, 0.02, 0.99]], "orientation": [0.97, 0.22, -0.01]},
+	{"classname": "dresser", "label": 0, "centroid": [-0.95, -0.04, 3.49, 0.54, 0.95, 1.09, 0.95, 0.24, -0.98], "coeffs": [0.28, 0.38, 0.28], "basis": [[-0.99, -0.02, -0.02], [0.02, 0.99, 0.02], [0.02, 0.02, 0.99]], "orientation": [0.97, 0.22, -0.01]},
+	{"classname": "cabinet", "label": 0, "centroid": [-1.03, -0.21, 2.06, 0.6, 1.94, 1.33, 0.95, 0.24, -0.98], "coeffs": [0.28, 0.38, 0.28], "basis": [[-0.99, -0.02, -0.02], [0.02, 0.99, 0.02], [0.02, 0.02, 0.99]], "orientation": [0.97, 0.22
